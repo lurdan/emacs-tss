@@ -1,4 +1,4 @@
-;;; tss.el --- provide a interface for auto-complete.el/flymake.el on typescript-mode.
+;;; tss.el --- provide a interface for auto-complete.el/flycheck.el on typescript-mode.
 
 ;; Copyright (C) 2013-2014  Hiroaki Otsu
 
@@ -6,7 +6,7 @@
 ;; Keywords: typescript, completion
 ;; URL: https://github.com/aki2o/emacs-tss
 ;; Version: 0.6.0
-;; Package-Requires: ((auto-complete "1.4.0") (json-mode "1.1.0") (log4e "0.2.0") (yaxception "0.1"))
+;; Package-Requires: ((auto-complete "1.4.0") (flycheck "0.24") (json-mode "1.1.0") (log4e "0.2.0") (yaxception "0.1"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -26,7 +26,7 @@
 ;; This extension is a interface for typescript-tools.
 ;; This extension provides the following on typescript-mode.
 ;;  - Auto completion by using auto-complete.el
-;;  - Check syntax by using flymake.el
+;;  - Check syntax by using flycheck.el
 ;;
 ;; For more infomation,
 ;; see <https://github.com/aki2o/emacs-tss/blob/master/README.md>
@@ -89,8 +89,6 @@
 ;; Jump to method definition at point.
 ;; `tss-implement-definition'
 ;; Implement inherited definitions of current component.
-;; `tss-run-flymake'
-;; Run check by flymake for current buffer.
 ;; `tss-reload-current-project'
 ;; Reload project data for current buffer.
 ;; `tss-restart-current-buffer'
@@ -125,7 +123,7 @@
 (require 'json)
 (require 'ring)
 (require 'etags)
-(require 'flymake)
+(require 'flycheck nil t)
 (require 'eldoc)
 (require 'pos-tip nil t)
 (require 'anything nil t)
@@ -134,7 +132,7 @@
 (require 'yaxception)
 
 (defgroup tss nil
-  "Auto completion / Flymake for TypeScript."
+  "Auto completion / Flycheck for TypeScript."
   :group 'completion
   :prefix "tss-")
 
@@ -1061,44 +1059,19 @@
                   (yaxception:get-text e)
                   (yaxception:get-stack-trace-string e)))))
 
-;;;###autoload
-(defun tss-run-flymake ()
-  "Run check by flymake for current buffer."
-  (interactive)
-  (yaxception:$
-    (yaxception:try
-      (when (and (tss--active-p)
-                 (tss--exist-process))
-        (tss--debug "Start run flymake")
-        (tss--sync-server)
-        (setq flymake-last-change-time nil)
-        (setq flymake-check-start-time (if (functionp 'flymake-float-time)
-                                           (flymake-float-time)
-                                         (float-time)))
-        (let* ((ret (tss--get-server-response "showErrors"
-                                              :waitsec 2
-                                              :response-start-char "["
-                                              :response-end-char "]"))
-               (errors (when (arrayp ret)
-                         (mapcar (lambda (e)
-                                   (let* ((file (cdr (assoc 'file e)))
-                                          (start (cdr (assoc 'start e)))
-                                          (line (cdr (assoc 'line start)))
-                                          (col (cdr (or (assoc 'character start)
-                                                        (assoc 'col start))))
-                                          (text (cdr (assoc 'text e))))
-                                     (tss--trace "Found error file[%s] line[%s] col[%s] ... %s" file line col text)
-                                     (format "%s (%d,%d): %s" file (or line 0) (or col 0) text)))
-                                 ret))))
-          (when errors
-            (setq flymake-new-err-info (flymake-parse-err-lines flymake-new-err-info errors)))
-          (flymake-post-syntax-check 0 "tss")
-          (setq flymake-is-running nil))))
-    (yaxception:catch 'error e
-      (tss--show-message "%s" (yaxception:get-text e))
-      (tss--error "failed jump to definition : %s\n%s"
-                  (yaxception:get-text e)
-                  (yaxception:get-stack-trace-string e)))))
+(when (featurep 'flycheck)
+  (flycheck-define-checker typescript-checker
+    "A TypeScript syntax checker using tsc command."
+    :command ("tsc" "--out" "/dev/null" source)
+    :error-patterns
+    ((error line-start (file-name) "(" line "," column "): error " (message) line-end))
+    :mode (typescript-mode))
+  (defun tss-setup-flycheck ()
+    (flycheck-select-checker 'typescript-checker)
+    (flycheck-mode t)
+    )
+  (add-hook 'typescript-mode-hook 'tss-setup-flycheck)
+  )
 
 ;;;###autoload
 (defun tss-reload-current-project ()
@@ -1174,9 +1147,6 @@
         (eldoc-add-command 'tss--insert-with-ac-trigger-command)
         (when (commandp 'typescript-insert-and-indent)
           (eldoc-add-command 'typescript-insert-and-indent))
-        ;; For flymake
-        (setq flymake-err-line-patterns '(("\\`\\(.+?\\.ts\\) (\\([0-9]+\\),\\([0-9]+\\)): \\(.+\\)" 1 2 3 4)))
-        (flymake-mode t)
         ;; Start TypeScript Services
         (tss--get-process t)
         (tss--info "finished setup for %s" (current-buffer))))
@@ -1196,8 +1166,6 @@
         if (and hook
                 (symbolp hook))
         do (add-hook hook 'tss-setup-current-buffer t))
-  ;; Run flymake when save buffer.
-  (add-hook 'after-save-hook 'tss-run-flymake t)
   ;; Delete tss process of the buffer when kill buffer.
   (add-hook 'kill-buffer-hook 'tss--delete-process t))
 
